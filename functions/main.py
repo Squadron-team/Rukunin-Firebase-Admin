@@ -47,7 +47,6 @@ def load_model():
         _model = joblib.load(_model_path)
     return _model
 
-
 @https_fn.on_request()
 def classify_image(req: https_fn.Request) -> https_fn.Response:
     """
@@ -119,42 +118,25 @@ def classify_image(req: https_fn.Request) -> https_fn.Response:
         )
 
 
-@https_fn.on_request()
-def calc(req: https_fn.Request) -> https_fn.Response:
+@https_fn.on_call()
+def calc(req: https_fn.CallableRequest):
     """
-    Expected JSON body:
+    Expected input (from Flutter):
     {
       "a": 5,
       "b": 3,
-      "op": "add" | "sub" | "mul" | "div"
+      "op": "add"
     }
     """
-    if req.method == "GET":
-        return https_fn.Response(
-            json.dumps(
-                {"message": "Calculator API is running. Use POST with JSON body."}
-            ),
-            mimetype="application/json",
-        )
 
-    data = req.get_json(silent=True)
-    if not data:
-        return https_fn.Response(
-            json.dumps({"error": "JSON body required"}),
-            status=400,
-            mimetype="application/json",
-        )
+    data = req.data  # This is where the callable payload comes from
 
     a = data.get("a")
     b = data.get("b")
     op = data.get("op")
 
     if a is None or b is None or op is None:
-        return https_fn.Response(
-            json.dumps({"error": "Missing fields: a, b, op"}),
-            status=400,
-            mimetype="application/json",
-        )
+        return {"error": "Missing fields: a, b, op"}
 
     if op == "add":
         result = a + b
@@ -164,19 +146,9 @@ def calc(req: https_fn.Request) -> https_fn.Response:
         result = a * b
     elif op == "div":
         if b == 0:
-            return https_fn.Response(
-                json.dumps({"error": "Division by zero"}),
-                status=400,
-                mimetype="application/json",
-            )
+            return {"error": "Division by zero"}
         result = a / b
     else:
-        return https_fn.Response(
-            json.dumps({"error": f"Unknown operation '{op}'"}),
-            status=400,
-            mimetype="application/json",
-        )
+        return {"error": f"Unknown operation '{op}'"}
 
-    return https_fn.Response(
-        json.dumps({"result": result}), mimetype="application/json"
-    )
+    return {"result": result}
