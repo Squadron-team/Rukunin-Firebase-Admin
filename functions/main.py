@@ -6,7 +6,7 @@ from firebase_functions import https_fn
 from firebase_functions.options import set_global_options
 from firebase_admin import initialize_app
 import joblib
-import json
+import base64
 import logging
 from pathlib import Path
 from PIL import Image
@@ -47,75 +47,44 @@ def load_model():
         _model = joblib.load(_model_path)
     return _model
 
-@https_fn.on_request()
-def classify_image(req: https_fn.Request) -> https_fn.Response:
+@https_fn.on_call()
+def classify_image(req: https_fn.CallableRequest) -> https_fn.Response:
     """
     HTTP Cloud Function for image classification
     Expects JSON with 'image' field containing base64 encoded image
     Returns JSON with prediction results
     """
-    # Set CORS headers
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST",
-        "Access-Control-Allow-Headers": "Content-Type",
-    }
+    data = req.data
 
-    # Handle preflight requests
-    if req.method == "OPTIONS":
-        return https_fn.Response("", headers=headers)
-
-    # Only accept POST requests
-    if req.method != "POST":
-        return https_fn.Response(
-            json.dumps({"error": "Only POST requests are accepted"}),
-            status=405,
-            headers=headers,
-            mimetype="application/json",
-        )
+    img_base64 = data.get("image")
+    if not img_base64:
+        return {"success": False, "error": "Missing 'image' field"}
 
     try:
-        # Get uploaded file
-        uploaded_file = req.files.get("image")
-        if not uploaded_file:
-            return https_fn.Response(
-                json.dumps({"error": "Missing file field 'image'"}),
-                status=400,
-                headers=headers,
-                mimetype="application/json",
-            )
+        # Decode base64 into bytes
+        img_bytes = base64.b64decode(img_base64)
 
-        img_bytes = uploaded_file.read()
+        # Open as PIL image
         img = Image.open(BytesIO(img_bytes)).convert("RGB")
         img_np = np.array(img)
 
+        # Load model (cached)
         model = load_model()
 
+        # Predict
         prediction = model.predict([img_np])[0]
         probabilities = model.predict_proba([img_np])[0].tolist()
 
-        resp = {
-            "prediction": int(prediction),
-            "probabilities": probabilities,
-            "confidence": float(max(probabilities)),
+        return {
             "success": True,
+            "prediction": int(prediction),
+            "confidence": float(max(probabilities)),
+            "probabilities": probabilities
         }
-
-        return https_fn.Response(
-            json.dumps(resp),
-            status=200,
-            headers=headers,
-            mimetype="application/json",
-        )
 
     except Exception as e:
         logging.exception("Inference error")
-        return https_fn.Response(
-            json.dumps({"error": str(e), "success": False}),
-            status=500,
-            headers=headers,
-            mimetype="application/json",
-        )
+        return {"success": False, "error": str(e)}
 
 
 @https_fn.on_call()
@@ -129,7 +98,7 @@ def calc(req: https_fn.CallableRequest):
     }
     """
 
-    data = req.data  # This is where the callable payload comes from
+    data = req.data
 
     a = data.get("a")
     b = data.get("b")
