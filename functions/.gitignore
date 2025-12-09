@@ -4,3 +4,10 @@ __pycache__/
 # Python virtual environment
 venv/
 *.local
+
+# Python cache files
+*.pyc
+.pytest_cache/
+
+# Model files - do not ignore
+*.pkl
