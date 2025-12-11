@@ -47,7 +47,7 @@ def load_model():
         _model = joblib.load(_model_path)
     return _model
 
-@https_fn.on_call()
+@https_fn.on_call(enforce_app_check=True)
 def classify_image(req: https_fn.CallableRequest) -> https_fn.Response:
     """
     HTTP Cloud Function for image classification
@@ -87,7 +87,7 @@ def classify_image(req: https_fn.CallableRequest) -> https_fn.Response:
         return {"success": False, "error": str(e)}
 
 
-@https_fn.on_call()
+@https_fn.on_call(enforce_app_check=True)
 def calc(req: https_fn.CallableRequest):
     """
     Expected input (from Flutter):
