@@ -5,8 +5,8 @@ from constants.constants import BASE_DIR
 MODEL_REGISTRY = {
     "simple_ml_classifier": BASE_DIR / "assets" / "image_classifier_logreg.pkl",
     "knn_ocr": BASE_DIR / "assets" / "knn_model.pkl",
-    "logistic_regression_ocr": BASE_DIR / "assets" / "logistic_regression_ocr.pkl",
-    "svm_ocr": BASE_DIR / "assets" / "svm_ocr.pkl",
+    "logistic_regression_ocr": BASE_DIR / "assets" / "logistic_regression_model.pkl",
+    "svm_ocr": BASE_DIR / "assets" / "svm_model.pkl",
 }
 
 _MODEL_CACHE = {}
