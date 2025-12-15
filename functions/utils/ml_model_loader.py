@@ -1,0 +1,23 @@
+import joblib
+from pathlib import Path
+import logging
+
+MODEL_REGISTRY = {
+    "simple_ml_classifier": Path(__file__).parent / "assets" / "image_classifier_logreg.pkl",
+    "knn_ocr": Path(__file__).parent / "assets" / "knn_model.pkl",
+    "logistic_regression_ocr": Path(__file__).parent / "assets" / "logistic_regression_ocr.pkl",
+    "svm_ocr": Path(__file__).parent / "assets" / "svm_ocr.pkl",
+}
+
+_MODEL_CACHE = {}
+
+def get_model(model_name: str):
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    if model_name not in _MODEL_CACHE:
+        logging.info(f"Loading model: {model_name}")
+        _MODEL_CACHE[model_name] = joblib.load(MODEL_REGISTRY[model_name])
+        logging.info(f"Model {model_name} loaded")
+
+    return _MODEL_CACHE[model_name]

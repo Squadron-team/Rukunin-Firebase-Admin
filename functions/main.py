@@ -5,19 +5,22 @@
 from firebase_functions import https_fn
 from firebase_functions.options import set_global_options
 from firebase_admin import initialize_app
-import joblib
 import base64
 import logging
-from pathlib import Path
 from PIL import Image
 from io import BytesIO
 import numpy as np
 import sys
-from sklearn.svm import SVC
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
 from services.image_processing import ImagePreprocessor, HOGExtractor
-from typing import Union
+from utils.ml_model_loader import get_model
+from services.fake_receipt_detection.text_segmentation import process_text_detection, process_line_grouping
+from services.fake_receipt_detection.text_extraction import process_text_extraction
+from services.fake_receipt_detection.verify_authenticity import process_verification
+from services.fake_receipt_detection.layout_aware_receipt_verification import (
+    validate_layout_structure,
+    validate_line_count
+)
+import cv2
 
 # Fix for loading pickled scikit-learn pipelines:
 # The model was trained in an environment where custom transformers
@@ -35,29 +38,6 @@ setattr(sys.modules["__main__"], "HOGExtractor", HOGExtractor)
 set_global_options(max_instances=2)
 
 initialize_app()
-
-# Global variable to cache the model
-ModelType = Union[SVC, LogisticRegression, KNeighborsClassifier]
-
-MODEL_REGISTRY = {
-    "simple_ml_classifier": Path(__file__).parent / "assets" / "image_classifier_logreg.pkl",
-    "knn_ocr": Path(__file__).parent / "assets" / "knn_model.pkl",
-    "logistic_regression_ocr": Path(__file__).parent / "assets" / "logistic_regression_ocr.pkl",
-    "svm_ocr": Path(__file__).parent / "assets" / "svm_ocr.pkl",
-}
-
-_MODEL_CACHE = {}
-
-def get_model(model_name: str):
-    if model_name not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model: {model_name}")
-
-    if model_name not in _MODEL_CACHE:
-        logging.info(f"Loading model: {model_name}")
-        _MODEL_CACHE[model_name] = joblib.load(MODEL_REGISTRY[model_name])
-        logging.info(f"Model {model_name} loaded")
-
-    return _MODEL_CACHE[model_name]
 
 @https_fn.on_call()
 def classify_image(req: https_fn.CallableRequest):
@@ -150,4 +130,132 @@ def calc(req: https_fn.CallableRequest) :
         )
 
     return {"result": result}
+
+@https_fn.on_call()
+def detect_fake_receipt(req: https_fn.CallableRequest):
+    """
+    HTTP Cloud Function for fake receipt detection
+    Expects JSON with:
+    - 'image': base64 encoded image
+    - 'expected_fields': dict with expected values (e.g., {"total_amount": "rp14.000"})
+    
+    Returns JSON with verification results
+    """
+    data = req.data
+
+    img_base64 = data.get("image")
+    expected_fields = data.get("expected_fields", {})
+
+    if not img_base64:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "Missing 'image' field"
+        )
+
+    try:
+        # Decode base64 into bytes
+        img_bytes = base64.b64decode(img_base64)
+
+        # Convert to numpy array
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if image is None:
+            raise Exception("Failed to decode image")
+
+        # Step 1: Text detection
+        logging.info("Step 1: Text detection")
+        result_img, boxes, gray, edges, dilated = process_text_detection(image)
+
+        # Step 2: Line grouping
+        logging.info("Step 2: Line grouping")
+        lines = process_line_grouping(boxes)
+
+        # Early validation: Line count check
+        line_count_validation = validate_line_count(lines, min_lines=10, max_lines=20)
+        
+        if not line_count_validation["is_valid"]:
+            return {
+                "success": True,
+                "early_detection": True,
+                "verdict": "FAKE",
+                "reason": line_count_validation["reason"],
+                "details": {
+                    "detected_lines": line_count_validation["detected_lines"],
+                    "expected_range": line_count_validation["expected_range"]
+                }
+            }
+
+        # Early validation: Layout structure check
+        logging.info("Validating layout structure")
+        layout_validation = validate_layout_structure(lines, image.shape[:2])
+        
+        if not layout_validation["is_valid"]:
+            return {
+                "success": True,
+                "early_detection": True,
+                "verdict": "FAKE",
+                "reason": layout_validation["reason"],
+                "details": {
+                    "similarity_score": layout_validation["similarity_score"],
+                    "threshold": layout_validation["threshold"],
+                    "violations": layout_validation["violations"]
+                }
+            }
+
+        # Step 3: Text extraction using both models
+        logging.info("Step 3: Text extraction")
+        lines_data = process_text_extraction(gray, lines)
+
+        if not lines_data:
+            return {
+                "success": True,
+                "verdict": "INCONCLUSIVE",
+                "reason": "No text could be extracted from the image"
+            }
+
+        # Step 4: Verification using expected fields
+        logging.info("Step 4: Verification")
+        verification = process_verification(lines_data, expected_fields)
+
+        # Prepare response
+        response = {
+            "success": True,
+            "early_detection": False,
+            "verdict": verification["combined"]["final_verdict"],
+            "knn_pass": verification["combined"]["knn_pass"],
+            "logistic_pass": verification["combined"]["logistic_pass"],
+            "layout_validation": {
+                "is_valid": layout_validation["is_valid"],
+                "similarity_score": layout_validation["similarity_score"]
+            },
+            "line_count": len(lines_data),
+            "extracted_fields": {}
+        }
+
+        # Add extracted fields from both models
+        for line in lines_data:
+            field_knn = line.get("field_knn")
+            field_log = line.get("field_logistic")
+            
+            if field_knn and field_knn != "unknown":
+                response["extracted_fields"][f"{field_knn}_knn"] = line.get("text_knn", "")
+            
+            if field_log and field_log != "unknown":
+                response["extracted_fields"][f"{field_log}_logistic"] = line.get("text_logistic", "")
+
+        # Add verification details
+        response["verification_details"] = {
+            "knn_checks": verification["knn_verification"],
+            "logistic_checks": verification["logistic_verification"]
+        }
+
+        return response
+
+    except Exception as e:
+        logging.exception("Receipt detection error")
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INTERNAL,
+            f"Processing failed: {str(e)}"
+        )
 
