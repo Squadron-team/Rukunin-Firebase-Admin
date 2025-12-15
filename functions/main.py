@@ -39,7 +39,7 @@ set_global_options(max_instances=2)
 
 initialize_app()
 
-@https_fn.on_call()
+@https_fn.on_call(memory=1024)
 def classify_image(req: https_fn.CallableRequest):
     """
     HTTP Cloud Function for image classification
@@ -50,7 +50,7 @@ def classify_image(req: https_fn.CallableRequest):
 
     img_base64 = data.get("image")
     if not img_base64:
-        return https_fn.HttpsError(
+        raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
             "Missing 'image' field"
         )
@@ -67,7 +67,10 @@ def classify_image(req: https_fn.CallableRequest):
         model = get_model("simple_ml_classifier")
 
         if model is None:
-            raise Exception("Model is not loaded properly!")
+            raise https_fn.HttpsError(
+                https_fn.FunctionsErrorCode.INTERNAL,
+                "Model is not loaded properly!"
+            )
 
         prediction = model.predict([img_np])[0]  # type: ignore
         probabilities = model.predict_proba([img_np])[0].tolist()  # type: ignore
@@ -81,7 +84,7 @@ def classify_image(req: https_fn.CallableRequest):
 
     except Exception as e:
         logging.exception("Inference error")
-        return https_fn.HttpsError(
+        raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INTERNAL,
             str(e)
         )
@@ -105,7 +108,7 @@ def calc(req: https_fn.CallableRequest) :
     op = data.get("op")
 
     if a is None or b is None or op is None:
-        return https_fn.HttpsError(
+        raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
             "Missing fields: a, b, op"
         )
@@ -118,20 +121,20 @@ def calc(req: https_fn.CallableRequest) :
         result = a * b
     elif op == "div":
         if b == 0:
-            return https_fn.HttpsError(
+            raise https_fn.HttpsError(
                 https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
                 "Division by zero is not allowed"
             )
         result = a / b
     else:
-        return https_fn.HttpsError(
+        raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
             f"Unknown operation '{op}'"
         )
 
     return {"result": result}
 
-@https_fn.on_call()
+@https_fn.on_call(memory=1024)
 def detect_fake_receipt(req: https_fn.CallableRequest):
     """
     HTTP Cloud Function for fake receipt detection
@@ -161,7 +164,10 @@ def detect_fake_receipt(req: https_fn.CallableRequest):
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if image is None:
-            raise Exception("Failed to decode image")
+            raise https_fn.HttpsError(
+                https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+                "Failed to decode image"
+            )
 
         # Step 1: Text detection
         logging.info("Step 1: Text detection")

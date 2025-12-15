@@ -1,12 +1,12 @@
 import joblib
-from pathlib import Path
 import logging
+from constants.constants import BASE_DIR
 
 MODEL_REGISTRY = {
-    "simple_ml_classifier": Path(__file__).parent / "assets" / "image_classifier_logreg.pkl",
-    "knn_ocr": Path(__file__).parent / "assets" / "knn_model.pkl",
-    "logistic_regression_ocr": Path(__file__).parent / "assets" / "logistic_regression_ocr.pkl",
-    "svm_ocr": Path(__file__).parent / "assets" / "svm_ocr.pkl",
+    "simple_ml_classifier": BASE_DIR / "assets" / "image_classifier_logreg.pkl",
+    "knn_ocr": BASE_DIR / "assets" / "knn_model.pkl",
+    "logistic_regression_ocr": BASE_DIR / "assets" / "logistic_regression_ocr.pkl",
+    "svm_ocr": BASE_DIR / "assets" / "svm_ocr.pkl",
 }
 
 _MODEL_CACHE = {}
