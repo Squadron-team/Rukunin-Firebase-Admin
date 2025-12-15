@@ -13,16 +13,19 @@ from PIL import Image
 from io import BytesIO
 import numpy as np
 import sys
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
 from services.image_processing import ImagePreprocessor, HOGExtractor
-
+from typing import Union
 
 # Fix for loading pickled scikit-learn pipelines:
 # The model was trained in an environment where custom transformers
 # (ImagePreprocessor, HOGExtractor) were defined under the __main__ module.
 # Pickle stores class locations, so we alias these classes into __main__
 # to ensure joblib.load() can reconstruct the pipeline correctly.
-sys.modules['__main__'].ImagePreprocessor = ImagePreprocessor
-sys.modules['__main__'].HOGExtractor = HOGExtractor
+setattr(sys.modules["__main__"], "ImagePreprocessor", ImagePreprocessor)
+setattr(sys.modules["__main__"], "HOGExtractor", HOGExtractor)
 
 # For cost control, you can set the maximum number of containers that can be
 # running at the same time. This helps mitigate the impact of unexpected
@@ -34,21 +37,30 @@ set_global_options(max_instances=2)
 initialize_app()
 
 # Global variable to cache the model
-_model = None
-# Use absolute path relative to the functions directory
-_model_path = Path(__file__).parent / "assets" / "image_classifier_linreg.pkl"
+ModelType = Union[SVC, LogisticRegression, KNeighborsClassifier]
 
-def load_model():
-    global _model
-    if _model is None:
-        logging.info(f"Loading model from: {_model_path}")
-        if not _model_path.exists():
-            raise FileNotFoundError(f"Model not found at {_model_path}")
-        _model = joblib.load(_model_path)
-    return _model
+MODEL_REGISTRY = {
+    "simple_ml_classifier": Path(__file__).parent / "assets" / "image_classifier_logreg.pkl",
+    "knn_ocr": Path(__file__).parent / "assets" / "knn_model.pkl",
+    "logistic_regression_ocr": Path(__file__).parent / "assets" / "logistic_regression_ocr.pkl",
+    "svm_ocr": Path(__file__).parent / "assets" / "svm_ocr.pkl",
+}
 
-@https_fn.on_call(enforce_app_check=True)
-def classify_image(req: https_fn.CallableRequest) -> https_fn.Response:
+_MODEL_CACHE = {}
+
+def get_model(model_name: str):
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    if model_name not in _MODEL_CACHE:
+        logging.info(f"Loading model: {model_name}")
+        _MODEL_CACHE[model_name] = joblib.load(MODEL_REGISTRY[model_name])
+        logging.info(f"Model {model_name} loaded")
+
+    return _MODEL_CACHE[model_name]
+
+@https_fn.on_call()
+def classify_image(req: https_fn.CallableRequest):
     """
     HTTP Cloud Function for image classification
     Expects JSON with 'image' field containing base64 encoded image
@@ -58,7 +70,10 @@ def classify_image(req: https_fn.CallableRequest) -> https_fn.Response:
 
     img_base64 = data.get("image")
     if not img_base64:
-        return {"success": False, "error": "Missing 'image' field"}
+        return https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "Missing 'image' field"
+        )
 
     try:
         # Decode base64 into bytes
@@ -69,26 +84,31 @@ def classify_image(req: https_fn.CallableRequest) -> https_fn.Response:
         img_np = np.array(img)
 
         # Load model (cached)
-        model = load_model()
+        model = get_model("simple_ml_classifier")
 
-        # Predict
-        prediction = model.predict([img_np])[0]
-        probabilities = model.predict_proba([img_np])[0].tolist()
+        if model is None:
+            raise Exception("Model is not loaded properly!")
+
+        prediction = model.predict([img_np])[0]  # type: ignore
+        probabilities = model.predict_proba([img_np])[0].tolist()  # type: ignore
 
         return {
             "success": True,
             "prediction": int(prediction),
             "confidence": float(max(probabilities)),
-            "probabilities": probabilities
+            "probabilities": probabilities,
         }
 
     except Exception as e:
         logging.exception("Inference error")
-        return {"success": False, "error": str(e)}
+        return https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INTERNAL,
+            str(e)
+        )
 
 
 @https_fn.on_call(enforce_app_check=True)
-def calc(req: https_fn.CallableRequest):
+def calc(req: https_fn.CallableRequest) :
     """
     Expected input (from Flutter):
     {
@@ -105,7 +125,10 @@ def calc(req: https_fn.CallableRequest):
     op = data.get("op")
 
     if a is None or b is None or op is None:
-        return {"error": "Missing fields: a, b, op"}
+        return https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "Missing fields: a, b, op"
+        )
 
     if op == "add":
         result = a + b
@@ -115,9 +138,16 @@ def calc(req: https_fn.CallableRequest):
         result = a * b
     elif op == "div":
         if b == 0:
-            return {"error": "Division by zero"}
+            return https_fn.HttpsError(
+                https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+                "Division by zero is not allowed"
+            )
         result = a / b
     else:
-        return {"error": f"Unknown operation '{op}'"}
+        return https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            f"Unknown operation '{op}'"
+        )
 
     return {"result": result}
+
