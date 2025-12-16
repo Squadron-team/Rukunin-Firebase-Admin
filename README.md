@@ -1,3 +1,3 @@
-# Rukunin Firebase Functions
+# Rukunin Firebase Admin
 
-A set of backend scripts for the Rukunin app, built with Firebase Functions.
+A Firebase Admin backend for the Rukunin app, managing server-side logic, API endpoints, background tasks, and Firebase services.
