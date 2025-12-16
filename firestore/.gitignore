@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+
+# Python virtual environment
+venv/
+*.local
+
+# Python cache files
+*.pyc
+.pytest_cache/
+
+# Firebase
+serviceAccountKey.json
+.firebase/
