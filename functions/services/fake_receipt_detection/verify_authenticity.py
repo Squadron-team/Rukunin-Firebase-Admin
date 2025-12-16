@@ -1,109 +1,59 @@
-from typing import List, Dict, Any
+from typing import Dict, List
+from schemas.line_extraction_result import LineExtractionResult
+from schemas.verification import VerificationResult, FieldVerification, VerificationSummary
 
 def process_verification(
-    line_items: List[Dict[str, Any]], expected_fields: Dict[str, Any]
-) -> Dict[str, Any]:
+    line_items: List[LineExtractionResult],
+    expected_fields: Dict[str, str],
+) -> VerificationResult:
     """
-    Verifies extracted receipt fields using both OCR classifiers:
-    - KNN
-    - Logistic Regression
-
-    Parameters:
-        line_items: list of dicts (each contains OCR results)
-        expected_fields: dict defining expected values or formats
-
-    Returns:
-        dict summary of:
-        - knn_verification
-        - logistic_verification
-        - combined_verdict
+    Verifies extracted receipt fields against expected values.
     """
+    # ---------------------------------
+    # Step 1: Collect detected fields
+    # ---------------------------------
+    detected_fields: Dict[str, str] = {}
 
-    results_knn = {}
-    results_logistic = {}
-
-    # --------------------------
-    # PROCESS EACH EXTRACTED FIELD
-    # --------------------------
     for item in line_items:
-        # Each item contains OCR outputs for both models
-        field_k = item.get("field_knn")
-        text_k = item.get("text_knn")
+        if not item.field:
+            continue
 
-        field_l = item.get("field_logistic")
-        text_l = item.get("text_logistic")
-
-        # --------------------------
-        # Store KNN result
-        # --------------------------
-        if field_k:
-            if field_k not in results_knn:
-                results_knn[field_k] = text_k
-
-        # --------------------------
-        # Store Logistic result
-        # --------------------------
-        if field_l:
-            if field_l not in results_logistic:
-                results_logistic[field_l] = text_l
+        # Keep first occurrence only
+        if item.field not in detected_fields:
+            detected_fields[item.field] = item.text
 
     # ---------------------------------
-    # VERIFICATION LOGIC
+    # Step 2: Verify against expectations
     # ---------------------------------
-    knn_check = {}
-    logistic_check = {}
+    field_results: Dict[str, FieldVerification] = {}
 
-    def check_value(expected, actual):
-        """Simple comparison helper."""
-        if expected is None:
-            return True
-        return str(expected).strip() == str(actual).strip()
+    for f, expected_value in expected_fields.items():
+        actual_value = detected_fields.get(f)
 
-    # --------------------------
-    # Check KNN
-    # --------------------------
-    for field, expected_value in expected_fields.items():
-        print("KNN verification")
-        actual = results_knn.get(field)
-        print(f"Actual {actual} - Expected value: {expected_value}")
-        knn_check[field] = {
-            "expected": expected_value,
-            "actual": actual,
-            "match": check_value(expected_value, actual),
-        }
+        if actual_value is None:
+            continue
 
-    # --------------------------
-    # Check Logistic Regression
-    # --------------------------
-    for field, expected_value in expected_fields.items():
-        print("Logistic regression verification")
-        actual = results_logistic.get(field)
-        print(f"Actual {actual} - Expected value: {expected_value}")
-        logistic_check[field] = {
-            "expected": expected_value,
-            "actual": actual,
-            "match": check_value(expected_value, actual),
-        }
+        field_results[f] = FieldVerification(
+            expected=expected_value,
+            actual=actual_value,
+            is_match=expected_value.strip() == actual_value.strip(),
+        )
 
-    # --------------------------
-    # Combined final verdict
-    # --------------------------
-    knn_pass = all(v["match"] for v in knn_check.values())
-    logistic_pass = all(v["match"] for v in logistic_check.values())
+    # ---------------------------------
+    # Step 3: Final verdict
+    # ---------------------------------
+    passed = True
+    for result in field_results.values():
+        if not result.is_match:
+            passed = False
+            break
 
-    combined = {
-        "knn_pass": knn_pass,
-        "logistic_pass": logistic_pass,
-        "final_verdict": (
-            "VALID RECEIPT" if knn_pass or logistic_pass else "POTENTIALLY FAKE"
-        ),
-    }
+    summary = VerificationSummary(
+        passed=passed,
+        final_verdict="VALID RECEIPT" if passed else "POTENTIALLY FAKE",
+    )
 
-    # --------------------------
-    # Return full report
-    # --------------------------
-    return {
-        "knn_verification": knn_check,
-        "logistic_verification": logistic_check,
-        "combined": combined,
-    }
+    return VerificationResult(
+        field_verification=field_results,
+        summary=summary,
+    )

@@ -13,12 +13,8 @@ import numpy as np
 import sys
 from services.image_processing import ImagePreprocessor, HOGExtractor
 from utils.ml_model_loader import get_model
-from services.fake_receipt_detection.text_segmentation import process_text_detection, process_line_grouping
-from services.fake_receipt_detection.text_extraction import process_text_extraction
-from services.fake_receipt_detection.verify_authenticity import process_verification
 from services.fake_receipt_detection.layout_aware_receipt_verification import (
-    validate_layout_structure,
-    validate_line_count
+    layout_aware_receipt_verification,
 )
 import cv2
 
@@ -39,6 +35,7 @@ set_global_options(max_instances=2)
 
 initialize_app()
 
+
 @https_fn.on_call(memory=1024)
 def classify_image(req: https_fn.CallableRequest):
     """
@@ -51,8 +48,7 @@ def classify_image(req: https_fn.CallableRequest):
     img_base64 = data.get("image")
     if not img_base64:
         raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-            "Missing 'image' field"
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Missing 'image' field"
         )
 
     try:
@@ -68,8 +64,7 @@ def classify_image(req: https_fn.CallableRequest):
 
         if model is None:
             raise https_fn.HttpsError(
-                https_fn.FunctionsErrorCode.INTERNAL,
-                "Model is not loaded properly!"
+                https_fn.FunctionsErrorCode.INTERNAL, "Model is not loaded properly!"
             )
 
         prediction = model.predict([img_np])[0]  # type: ignore
@@ -84,14 +79,11 @@ def classify_image(req: https_fn.CallableRequest):
 
     except Exception as e:
         logging.exception("Inference error")
-        raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INTERNAL,
-            str(e)
-        )
+        raise https_fn.HttpsError(https_fn.FunctionsErrorCode.INTERNAL, str(e))
 
 
 @https_fn.on_call(enforce_app_check=True)
-def calc(req: https_fn.CallableRequest) :
+def calc(req: https_fn.CallableRequest):
     """
     Expected input (from Flutter):
     {
@@ -109,8 +101,7 @@ def calc(req: https_fn.CallableRequest) :
 
     if a is None or b is None or op is None:
         raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-            "Missing fields: a, b, op"
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Missing fields: a, b, op"
         )
 
     if op == "add":
@@ -123,145 +114,68 @@ def calc(req: https_fn.CallableRequest) :
         if b == 0:
             raise https_fn.HttpsError(
                 https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-                "Division by zero is not allowed"
+                "Division by zero is not allowed",
             )
         result = a / b
     else:
         raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-            f"Unknown operation '{op}'"
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, f"Unknown operation '{op}'"
         )
 
     return {"result": result}
 
-@https_fn.on_call(memory=1024)
-def detect_fake_receipt(req: https_fn.CallableRequest):
+
+@https_fn.on_request(memory=1024) # type: ignore
+def detect_fake_receipt(req: https_fn.Request): # type: ignore
     """
     HTTP Cloud Function for fake receipt detection
-    Expects JSON with:
-    - 'image': base64 encoded image
-    - 'expected_fields': dict with expected values (e.g., {"total_amount": "rp14.000"})
-    
+    - 'image': image from HTTP post request
+    - 'expected_fields': string with expected values (e.g., "Rp14.000")
+
     Returns JSON with verification results
     """
-    data = req.data
+    if "image" not in req.files:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "No image file!"
+        )
 
-    img_base64 = data.get("image")
-    expected_fields = data.get("expected_fields", {})
+    expected_amount = req.form.get("expected_amount")
 
-    if not img_base64:
+    if expected_amount is None:
         raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-            "Missing 'image' field"
+            "Expected amount field is missing!",
         )
 
     try:
-        # Decode base64 into bytes
-        img_bytes = base64.b64decode(img_base64)
+        file = req.files["image"]
 
-        # Convert to numpy array
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # Read bytes
+        image_bytes = file.read()
 
-        if image is None:
+        # Decode image
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        image_np = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if image_np is None:
             raise https_fn.HttpsError(
-                https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-                "Failed to decode image"
+                https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Invalid image"
             )
+        verification, lines_data = layout_aware_receipt_verification(
+            image=image_np,
+            expected_amount={"total_amount": expected_amount.lower()},
+        )
 
-        # Step 1: Text detection
-        logging.info("Step 1: Text detection")
-        result_img, boxes, gray, edges, dilated = process_text_detection(image)
-
-        # Step 2: Line grouping
-        logging.info("Step 2: Line grouping")
-        lines = process_line_grouping(boxes)
-
-        # Early validation: Line count check
-        line_count_validation = validate_line_count(lines, min_lines=10, max_lines=20)
-        
-        if not line_count_validation["is_valid"]:
-            return {
-                "success": True,
-                "early_detection": True,
-                "verdict": "FAKE",
-                "reason": line_count_validation["reason"],
-                "details": {
-                    "detected_lines": line_count_validation["detected_lines"],
-                    "expected_range": line_count_validation["expected_range"]
-                }
-            }
-
-        # Early validation: Layout structure check
-        logging.info("Validating layout structure")
-        layout_validation = validate_layout_structure(lines, image.shape[:2])
-        
-        if not layout_validation["is_valid"]:
-            return {
-                "success": True,
-                "early_detection": True,
-                "verdict": "FAKE",
-                "reason": layout_validation["reason"],
-                "details": {
-                    "similarity_score": layout_validation["similarity_score"],
-                    "threshold": layout_validation["threshold"],
-                    "violations": layout_validation["violations"]
-                }
-            }
-
-        # Step 3: Text extraction using both models
-        logging.info("Step 3: Text extraction")
-        lines_data = process_text_extraction(gray, lines)
-
-        if not lines_data:
-            return {
-                "success": True,
-                "verdict": "INCONCLUSIVE",
-                "reason": "No text could be extracted from the image"
-            }
-
-        # Step 4: Verification using expected fields
-        logging.info("Step 4: Verification")
-        verification = process_verification(lines_data, expected_fields)
-
-        # Prepare response
-        response = {
-            "success": True,
-            "early_detection": False,
-            "verdict": verification["combined"]["final_verdict"],
-            "knn_pass": verification["combined"]["knn_pass"],
-            "logistic_pass": verification["combined"]["logistic_pass"],
-            "layout_validation": {
-                "is_valid": layout_validation["is_valid"],
-                "similarity_score": layout_validation["similarity_score"]
-            },
-            "line_count": len(lines_data),
-            "extracted_fields": {}
+        return {
+            "message": "success",
+            "expected_amount": expected_amount,
+            "final_verdict": verification.summary.final_verdict,
+            "verification": verification,
+            "lines_data": lines_data,
         }
-
-        # Add extracted fields from both models
-        for line in lines_data:
-            field_knn = line.get("field_knn")
-            field_log = line.get("field_logistic")
-            
-            if field_knn and field_knn != "unknown":
-                response["extracted_fields"][f"{field_knn}_knn"] = line.get("text_knn", "")
-            
-            if field_log and field_log != "unknown":
-                response["extracted_fields"][f"{field_log}_logistic"] = line.get("text_logistic", "")
-
-        # Add verification details
-        response["verification_details"] = {
-            "knn_checks": verification["knn_verification"],
-            "logistic_checks": verification["logistic_verification"]
-        }
-
-        return response
 
     except Exception as e:
         logging.exception("Receipt detection error")
         raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INTERNAL,
-            f"Processing failed: {str(e)}"
+            https_fn.FunctionsErrorCode.INTERNAL, f"Processing failed: {str(e)}"
         )
-

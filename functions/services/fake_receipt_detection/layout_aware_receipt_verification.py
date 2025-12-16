@@ -2,6 +2,14 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from typing import Dict, Tuple, List, Any
+from .text_segmentation import process_line_grouping, process_text_detection
+from .text_extraction import process_text_extraction
+from .verify_authenticity import process_verification
+from schemas.verification import VerificationResult, VerificationSummary
+from schemas.line_count_validation import LineCountValidationResult
+from schemas.line_extraction_result import LineExtractionResult
+from schemas.layout_validation_result import LayoutValidationResult
+from schemas.layout_fingerprint import LayoutFingerprint
 
 def get_field_colors() -> Dict[str, Tuple[int, int, int]]:
     """Get color mapping for different field types"""
@@ -28,7 +36,7 @@ def get_field_colors() -> Dict[str, Tuple[int, int, int]]:
 
 def extract_layout_fingerprint(
     lines: List[List[Tuple[int, int, int, int]]], image_shape: Tuple[int, int]
-) -> Dict[str, Any]:
+) -> LayoutFingerprint:
     """
     Extract structural features from receipt layout to create a fingerprint.
 
@@ -40,25 +48,22 @@ def extract_layout_fingerprint(
         Dictionary containing layout features
     """
     if not lines:
-        return {}
+        return LayoutFingerprint()
 
     img_height, img_width = image_shape
 
-    # 1. Line distribution analysis
-    line_y_positions = []
-    line_heights = []
-    line_widths = []
-    line_x_starts = []
+    line_y_positions: List[float] = []
+    line_heights: List[float] = []
+    line_widths: List[float] = []
+    line_x_starts: List[float] = []
 
     for line_boxes in lines:
         if not line_boxes:
             continue
 
-        # Get y-position of line (use first box)
         y_pos = line_boxes[0][1]
-        line_y_positions.append(y_pos / img_height)  # Normalize
+        line_y_positions.append(y_pos / img_height)
 
-        # Calculate line metrics
         y_min = min(box[1] for box in line_boxes)
         y_max = max(box[1] + box[3] for box in line_boxes)
         x_min = min(box[0] for box in line_boxes)
@@ -68,51 +73,48 @@ def extract_layout_fingerprint(
         line_widths.append((x_max - x_min) / img_width)
         line_x_starts.append(x_min / img_width)
 
-    # 2. Vertical spacing analysis
-    line_gaps = []
-    for i in range(len(line_y_positions) - 1):
-        gap = line_y_positions[i + 1] - line_y_positions[i]
-        line_gaps.append(gap)
+    line_gaps: List[float] = [
+        line_y_positions[i + 1] - line_y_positions[i]
+        for i in range(len(line_y_positions) - 1)
+    ]
 
-    # 3. Horizontal alignment analysis
-    alignment_variance = np.var(line_x_starts) if line_x_starts else 0
-
-    # 4. Density zones (top, middle, bottom)
-    top_zone_lines = sum(1 for y in line_y_positions if y < 0.33)
-    middle_zone_lines = sum(1 for y in line_y_positions if 0.33 <= y < 0.67)
-    bottom_zone_lines = sum(1 for y in line_y_positions if y >= 0.67)
+    alignment_variance = float(np.var(line_x_starts)) if line_x_starts else 0.0
 
     total_lines = len(line_y_positions)
-    zone_distribution = [
-        top_zone_lines / total_lines if total_lines > 0 else 0,
-        middle_zone_lines / total_lines if total_lines > 0 else 0,
-        bottom_zone_lines / total_lines if total_lines > 0 else 0,
-    ]
 
-    # 5. Width pattern analysis
-    narrow_lines = sum(1 for w in line_widths if w < 0.5)
-    medium_lines = sum(1 for w in line_widths if 0.5 <= w < 0.8)
-    wide_lines = sum(1 for w in line_widths if w >= 0.8)
+    zone_distribution = (
+        [
+            sum(1 for y in line_y_positions if y < 0.33) / total_lines,
+            sum(1 for y in line_y_positions if 0.33 <= y < 0.67) / total_lines,
+            sum(1 for y in line_y_positions if y >= 0.67) / total_lines,
+        ]
+        if total_lines
+        else [0.0, 0.0, 0.0]
+    )
 
-    width_distribution = [
-        narrow_lines / total_lines if total_lines > 0 else 0,
-        medium_lines / total_lines if total_lines > 0 else 0,
-        wide_lines / total_lines if total_lines > 0 else 0,
-    ]
+    width_distribution = (
+        [
+            sum(1 for w in line_widths if w < 0.5) / total_lines,
+            sum(1 for w in line_widths if 0.5 <= w < 0.8) / total_lines,
+            sum(1 for w in line_widths if w >= 0.8) / total_lines,
+        ]
+        if total_lines
+        else [0.0, 0.0, 0.0]
+    )
 
-    return {
-        "num_lines": len(lines),
-        "avg_line_height": np.mean(line_heights) if line_heights else 0,
-        "std_line_height": np.std(line_heights) if line_heights else 0,
-        "avg_line_width": np.mean(line_widths) if line_widths else 0,
-        "std_line_width": np.std(line_widths) if line_widths else 0,
-        "avg_line_gap": np.mean(line_gaps) if line_gaps else 0,
-        "std_line_gap": np.std(line_gaps) if line_gaps else 0,
-        "alignment_variance": alignment_variance,
-        "zone_distribution": zone_distribution,
-        "width_distribution": width_distribution,
-        "line_y_positions": line_y_positions,
-    }
+    return LayoutFingerprint(
+        num_lines=len(lines),
+        avg_line_height=float(np.mean(line_heights)) if line_heights else 0.0,
+        std_line_height=float(np.std(line_heights)) if line_heights else 0.0,
+        avg_line_width=float(np.mean(line_widths)) if line_widths else 0.0,
+        std_line_width=float(np.std(line_widths)) if line_widths else 0.0,
+        avg_line_gap=float(np.mean(line_gaps)) if line_gaps else 0.0,
+        std_line_gap=float(np.std(line_gaps)) if line_gaps else 0.0,
+        alignment_variance=alignment_variance,
+        zone_distribution=zone_distribution,
+        width_distribution=width_distribution,
+        line_y_positions=line_y_positions,
+    )
 
 
 def get_template_layout_fingerprint() -> Dict[str, Any]:
@@ -146,7 +148,7 @@ def get_template_layout_fingerprint() -> Dict[str, Any]:
 
 
 def calculate_layout_similarity(
-    detected: Dict[str, Any], template: Dict[str, Any]
+    detected: LayoutFingerprint, template: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Calculate similarity score between detected layout and template.
@@ -162,7 +164,7 @@ def calculate_layout_similarity(
     violations = []
 
     # 1. Number of lines check
-    num_lines = detected.get("num_lines", 0)
+    num_lines = detected.num_lines
     if template["num_lines"]["min"] <= num_lines <= template["num_lines"]["max"]:
         scores["num_lines"] = 1.0
     else:
@@ -172,7 +174,7 @@ def calculate_layout_similarity(
         )
 
     # 2. Average line height check
-    avg_height = detected.get("avg_line_height", 0)
+    avg_height = detected.avg_line_height
     if (
         template["avg_line_height"]["min"]
         <= avg_height
@@ -186,7 +188,7 @@ def calculate_layout_similarity(
         )
 
     # 3. Average line width check
-    avg_width = detected.get("avg_line_width", 0)
+    avg_width = detected.avg_line_width
     if (
         template["avg_line_width"]["min"]
         <= avg_width
@@ -198,7 +200,7 @@ def calculate_layout_similarity(
         violations.append(f"Average line width {avg_width:.3f} outside expected range")
 
     # 4. Line spacing consistency
-    avg_gap = detected.get("avg_line_gap", 0)
+    avg_gap = detected.avg_line_gap
     if template["avg_line_gap"]["min"] <= avg_gap <= template["avg_line_gap"]["max"]:
         scores["avg_line_gap"] = 1.0
     else:
@@ -206,7 +208,7 @@ def calculate_layout_similarity(
         violations.append(f"Line spacing {avg_gap:.3f} inconsistent with template")
 
     # 5. Alignment check
-    alignment_var = detected.get("alignment_variance", 0)
+    alignment_var = detected.alignment_variance
     if alignment_var <= template["alignment_variance"]["max"]:
         scores["alignment"] = 1.0
     else:
@@ -214,7 +216,7 @@ def calculate_layout_similarity(
         violations.append(f"Poor alignment detected (variance: {alignment_var:.3f})")
 
     # 6. Zone distribution check
-    zone_dist = detected.get("zone_distribution", [0, 0, 0])
+    zone_dist = detected.zone_distribution
     zone_score = 0
     zone_checks = 0
 
@@ -234,7 +236,7 @@ def calculate_layout_similarity(
     scores["zone_distribution"] = zone_score / zone_checks if zone_checks > 0 else 0
 
     # 7. Width distribution check
-    width_dist = detected.get("width_distribution", [0, 0, 0])
+    width_dist = detected.width_distribution
     width_score = 0
     width_checks = 0
 
@@ -284,25 +286,15 @@ def validate_layout_structure(
     lines: List[List[Tuple[int, int, int, int]]],
     image_shape: Tuple[int, int],
     similarity_threshold: float = 0.65,
-) -> Dict[str, Any]:
+) -> LayoutValidationResult:
     """
     Validate if the detected layout structure matches the expected receipt template.
-
-    Args:
-        lines: List of line segments
-        image_shape: (height, width) of the image
-        similarity_threshold: Minimum similarity score to pass (0.0 to 1.0)
-
-    Returns:
-        Dictionary containing validation result and detailed analysis
     """
-    # Extract layout fingerprint from detected lines
-    detected_fingerprint = extract_layout_fingerprint(lines, image_shape)
+    print("2.3 Validate layout structure")
 
-    # Get expected template fingerprint
+    detected_fingerprint = extract_layout_fingerprint(lines, image_shape)
     template_fingerprint = get_template_layout_fingerprint()
 
-    # Calculate similarity
     similarity_result = calculate_layout_similarity(
         detected_fingerprint, template_fingerprint
     )
@@ -310,38 +302,41 @@ def validate_layout_structure(
     is_valid = similarity_result["is_similar"]
     overall_score = similarity_result["overall_score"]
 
-    validation_result = {
-        "is_valid": is_valid,
-        "similarity_score": overall_score,
-        "threshold": similarity_threshold,
-        "detected_fingerprint": detected_fingerprint,
-        "template_fingerprint": template_fingerprint,
-        "detailed_scores": similarity_result["detailed_scores"],
-        "violations": similarity_result["violations"],
-        "reason": "",
-    }
+    reason = ""
 
     if not is_valid:
-        validation_result["reason"] = (
-            f"Layout structure mismatch (similarity: {overall_score:.1%}). This receipt has a different layout than expected. Likely FAKE or wrong receipt type."
+        reason = (
+            f"Layout structure mismatch (similarity: {overall_score:.1%}). "
+            "This receipt has a different layout than expected. "
+            "Likely FAKE or wrong receipt type."
         )
+
         if similarity_result["violations"]:
-            validation_result["reason"] += (
+            reason += (
                 f"\nKey violations: {'; '.join(similarity_result['violations'][:3])}"
             )
     else:
-        validation_result["reason"] = (
-            f"Layout structure matches expected template (similarity: {overall_score:.1%})."
+        reason = (
+            f"Layout structure matches expected template "
+            f"(similarity: {overall_score:.1%})."
         )
 
-    return validation_result
+    return LayoutValidationResult(
+        is_valid=is_valid,
+        similarity_score=overall_score,
+        threshold=similarity_threshold,
+        detected_fingerprint=detected_fingerprint,
+        template_fingerprint=template_fingerprint,
+        detailed_scores=similarity_result["detailed_scores"],
+        violations=similarity_result["violations"],
+        reason=reason,
+    )
 
 
 def validate_line_count(
     lines: List[List[Tuple[int, int, int, int]]],
-    min_lines: int = 10,
-    max_lines: int = 20,
-) -> Dict[str, Any]:
+    correct_lines: int,
+) -> LineCountValidationResult:
     """
     Validate if the number of detected line segments is within acceptable range.
     Receipts with too many or too few lines are likely fake/edited.
@@ -354,86 +349,59 @@ def validate_line_count(
     Returns:
         Dictionary containing validation result and details
     """
+    print("2.2 Validate line count")
+    
     num_lines = len(lines)
-    is_valid = min_lines <= num_lines <= max_lines
+    is_valid = correct_lines == num_lines
 
-    validation_result = {
-        "is_valid": is_valid,
-        "detected_lines": num_lines,
-        "expected_range": (min_lines, max_lines),
-        "reason": "",
-    }
-
-    if num_lines < min_lines:
-        validation_result["reason"] = (
-            f"Too few lines detected ({num_lines}). Missing critical receipt fields. Likely FAKE or incomplete image."
-        )
-    elif num_lines > max_lines:
-        validation_result["reason"] = (
-            f"Too many lines detected ({num_lines}). Extra content added. Likely FAKE or edited image."
-        )
+    if num_lines != correct_lines:
+        reason = f"Detected ({num_lines}). Total detected lines not match with the correct one. Likely FAKE or edited image."
     else:
-        validation_result["reason"] = (
-            f"Line count ({num_lines}) is within acceptable range."
-        )
+        reason = f"Line count ({num_lines}) is within acceptable range."
 
-    return validation_result
+    return LineCountValidationResult(
+        is_valid=is_valid,
+        detected_lines=num_lines,
+        expected_lines=correct_lines,
+        reason=reason,
+    )
 
 
-def display_verification_results(verification: Dict[str, Any]) -> None:
+def display_verification_results(verification: VerificationResult) -> None:
     """Step 5: Display verification results in console"""
-    print("\n=== VERIFICATION RESULT ===")
+    print("\n5. VERIFICATION RESULT")
 
     # Display layout structure validation if present
-    if "layout_validation" in verification:
-        layout_val = verification["layout_validation"]
+    if verification.layout_validation is not None:
+        layout_val = verification.layout_validation
         print("\n--- Layout Structure Validation ---")
-        print(f"Similarity Score: {layout_val['similarity_score']:.1%}")
-        print(f"Threshold       : {layout_val['threshold']:.1%}")
-        print(f"Status          : {'PASS' if layout_val['is_valid'] else 'FAIL'}")
-        print(f"Reason          : {layout_val['reason']}")
+        print(f"Similarity Score: {layout_val.similarity_score:.1%}")
+        print(f"Threshold       : {layout_val.threshold:.1%}")
+        print(f"Status          : {'PASS' if layout_val.is_valid else 'FAIL'}")
+        print(f"Reason          : {layout_val.reason}")
 
         # Show detailed scores
-        if layout_val.get("detailed_scores"):
+        if layout_val.detailed_scores:
             print("\nDetailed Scores:")
-            for metric, score in layout_val["detailed_scores"].items():
+            for metric, score in layout_val.detailed_scores.items():
                 status = "✓" if score >= 0.5 else "✗"
                 print(f"  {status} {metric}: {score:.1%}")
 
-        if not layout_val["is_valid"]:
-            print("\n⚠️  EARLY DETECTION: Receipt is FAKE based on layout structure!")
+        if not layout_val.is_valid:
+            print("\n EARLY DETECTION: Receipt is FAKE based on layout structure!")
             return
 
-    print(
-        f"KNN Verdict     : {'PASS' if verification['combined']['knn_pass'] else 'FAIL'}"
-    )
-    print(
-        f"Logistic Verdict: {'PASS' if verification['combined']['logistic_pass'] else 'FAIL'}"
-    )
-    print(f"FINAL VERDICT   : {verification['combined']['final_verdict']}")
-
-    # Optional reporting of matches per field
-    print("\n--- KNN Field Checks ---")
-    for field, info in verification["knn_verification"].items():
-        print(
-            f"{field}: expected={info['expected']} | actual={info['actual']} | match={info['match']}"
-        )
-
-    print("\n--- Logistic Field Checks ---")
-    for field, info in verification["logistic_verification"].items():
-        print(
-            f"{field}: expected={info['expected']} | actual={info['actual']} | match={info['match']}"
-        )
+    print(f"FINAL VERDICT   : {verification.summary.final_verdict}")
 
 
-def create_legend_image(lines_data: List[Dict[str, Any]]) -> np.ndarray:
+def create_legend_image(lines_data: List[LineExtractionResult]) -> np.ndarray:
     """Create legend image showing detected field types"""
     colors = get_field_colors()
     legend_img = np.ones((400, 400, 3), dtype=np.uint8) * 255
     y_offset = 30
 
     for field_type, color in colors.items():
-        if any(field_type == line["field_knn"] for line in lines_data):
+        if any(field_type == line.field for line in lines_data):
             cv2.putText(
                 legend_img,
                 field_type,
@@ -452,9 +420,10 @@ def visualize_results(
     image: np.ndarray,
     result_img: np.ndarray,
     annotated_img: np.ndarray,
-    lines_data: List[Dict[str, Any]],
+    lines_data: List[LineExtractionResult],
 ) -> None:
     """Step 6: Create and display visualization"""
+    print("\n6. Create visualization")
     plt.figure(figsize=(20, 10))
 
     plt.subplot(2, 2, 1)
@@ -480,3 +449,168 @@ def visualize_results(
 
     plt.tight_layout()
     plt.show()
+
+def create_annotated_image(
+    image: np.ndarray,
+    lines_data: List[LineExtractionResult],
+    verification: VerificationResult,
+) -> np.ndarray:
+    """Create annotated image with bounding boxes and labels"""
+    annotated_img = image.copy()
+    colors = get_field_colors()
+
+    # Draw annotated boxes
+    for line_data in lines_data:
+        color = colors.get(line_data.field, (0, 0, 0))
+
+        for box in line_data.boxes:
+            x, y, w, h = box
+            cv2.rectangle(annotated_img, (x, y), (x + w, y + h), color, 2)
+
+        # Add field type label using first box in line
+        if line_data.boxes:
+            x, y, w, h = line_data.boxes[0]
+            label = line_data.field
+            cv2.putText(
+                annotated_img,
+                label,
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2,
+            )
+
+    # Add final result to image
+    final_result = verification.summary.final_verdict
+
+    result_text = f"Result: {final_result}"
+
+    cv2.putText(
+        annotated_img, result_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3
+    )
+
+    return annotated_img
+
+def layout_aware_receipt_verification(
+    image: np.ndarray, expected_amount: Dict[str, Any]
+) -> Tuple[VerificationResult, List[LineExtractionResult]]:
+    """Complete pipeline with layout awareness"""
+    print("=== LAYOUT-AWARE RECEIPT VERIFICATION ===")
+
+    # Step 1: Detect text regions
+    result_img, boxes, gray, edges, dilated = process_text_detection(image)
+
+    # Step 2.1: Group boxes by lines
+    lines = process_line_grouping(boxes, line_threshold=15)
+
+    # Step 2.2: EARLY VALIDATION - Check line count
+    line_validation = validate_line_count(lines, correct_lines=15)
+
+    if not line_validation.is_valid:
+        # Create early fake detection result
+        verification = VerificationResult(
+            summary=VerificationSummary(
+                passed=False,
+                final_verdict="POTENTIALLY FAKE",
+            ),
+            line_validation=line_validation,
+        )
+
+        # Display results
+        display_verification_results(verification)
+
+        # Create simple annotated image showing fake detection
+        annotated_img = image.copy()
+        cv2.putText(
+            annotated_img,
+            "FAKE RECEIPT DETECTED!",
+            (20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),  # Red color
+            3,
+        )
+        cv2.putText(
+            annotated_img,
+            line_validation.reason,
+            (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
+            2,
+        )
+
+        visualize_results(image, result_img, annotated_img, [])
+
+        return verification, []
+
+    # Step 2.3: ADVANCED VALIDATION - Check layout structure
+    layout_validation = validate_layout_structure(
+        lines, image_shape=(image.shape[0], image.shape[1]), similarity_threshold=0.65
+    )
+
+    if not layout_validation.is_valid:
+        # Create early fake detection result
+        verification = VerificationResult(
+            summary=VerificationSummary(passed=False, final_verdict="POTENTIALLY FAKE"),
+            line_validation=line_validation,
+            layout_validation=layout_validation,
+        )
+
+        # Display results
+        display_verification_results(verification)
+
+        # Create annotated image showing layout mismatch
+        annotated_img = image.copy()
+        cv2.putText(
+            annotated_img,
+            "FAKE RECEIPT DETECTED!",
+            (20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            3,
+        )
+        cv2.putText(
+            annotated_img,
+            f"Layout Similarity: {layout_validation.similarity_score:.1%}",
+            (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
+            2,
+        )
+        cv2.putText(
+            annotated_img,
+            "Different layout structure detected!",
+            (20, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 255),
+            2,
+        )
+
+        visualize_results(image, result_img, annotated_img, [])
+
+        return verification, []
+
+    # Step 3: Extract text from each line
+    lines_data = process_text_extraction(gray, lines)
+
+    # Step 4: Verify authenticity
+    verification = process_verification(lines_data, expected_amount)
+
+    # Add line validation to verification results
+    verification.line_validation = line_validation
+    verification.layout_validation = layout_validation
+    verification.early_detection = False
+
+    # Step 5: Display results
+    display_verification_results(verification)
+
+    # Step 6: Create visualization
+    annotated_img = create_annotated_image(image, lines_data, verification)
+    visualize_results(image, result_img, annotated_img, lines_data)
+
+    return verification, lines_data

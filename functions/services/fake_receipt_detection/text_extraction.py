@@ -1,37 +1,33 @@
 import re
 import numpy as np
 import cv2
-from typing import Tuple, List, Optional, Dict, Any
+from typing import List, Tuple, Optional
 from .text_segmentation import segment_characters_grayscale
 from .data_preprocessing import preprocess_char
+from schemas.line_extraction_result import LineExtractionResult
 from utils.ml_model_loader import get_model
 
-def predict_char_models(roi: np.ndarray) -> Tuple[str, str]:
+
+def predict_char_models(roi: np.ndarray) -> str:
     """
-    Run prediction using both models.
-    Return a tuple: (knn_char, logistic_char)
+    Run prediction using Logistic regression
+    Return a string: (logistic_char)
     """
     processed = preprocess_char(roi)
 
     if processed is None:
-        return "", ""
-
-    # KNN prediction
-    knn_model = get_model("knn_ocr")
-    knn_pred = knn_model.predict(processed)[0]
+        return ""
 
     # Logistic regression prediction
     logistic_model = get_model("logistic_regression_ocr")
     log_pred = logistic_model.predict(processed)[0]
 
-    return knn_pred, log_pred
+    return log_pred
 
 
 def extract_text_from_line(
     image: np.ndarray, line_boxes: List[Tuple[int, int, int, int]]
-) -> Tuple[str, str]:
-
-    text_knn = ""
+) -> str:
     text_logistic = ""
 
     for x, y, w, h in line_boxes:
@@ -46,22 +42,21 @@ def extract_text_from_line(
 
         # segment characters inside this line - use grayscale version
         char_boxes = segment_characters_grayscale(gray_line)
-        
-        # Extract text from each character
-        for cx, cy, cw, ch in char_boxes:
+
+        # visualize each character
+        for i, (cx, cy, cw, ch) in enumerate(char_boxes):
             char_roi = gray_line[cy : cy + ch, cx : cx + cw]
-            
-            # Predict character using both models
-            knn_char, log_char = predict_char_models(char_roi)
-            
-            text_knn += knn_char
-            text_logistic += log_char
-        
-        # Add space between boxes in the same line
-        text_knn += " "
-        text_logistic += " "
-        
-    return text_knn.strip(), text_logistic.strip()
+
+            processed = preprocess_char(char_roi)
+            if processed is None:
+                print(f"   Character {i}: EMPTY or INVALID")
+                continue
+
+            # Predict (optional)
+            pred_log = predict_char_models(char_roi)
+            text_logistic += pred_log
+
+    return text_logistic
 
 
 def parse_line_by_position(line_text: str, line_number: int) -> Tuple[str, str]:
@@ -148,32 +143,31 @@ def parse_detail_line(text: str) -> Tuple[str, Optional[int]]:
         return "total", extract_amount_from_text(text)
     return "unknown", None
 
+
 def process_text_extraction(
     gray: np.ndarray, lines: List[List[Tuple[int, int, int, int]]]
-) -> List[Dict[str, Any]]:
+) -> List[LineExtractionResult]:
     """Step 3: Extract text from each line using both models"""
+    print("\n3. Extracting text from lines")
     lines_data = []
 
     for i, line_boxes in enumerate(lines):
-        text_knn, text_logistic = extract_text_from_line(gray, line_boxes)
+        text = extract_text_from_line(gray, line_boxes)
 
         # Skip empty lines
-        if (not text_knn.strip()) and (not text_logistic.strip()):
+        if not text.strip():
             continue
 
-        # Parse using BOTH outputs
-        field_knn, parsed_knn = parse_line_by_position(text_knn, i)
-        field_log, parsed_log = parse_line_by_position(text_logistic, i)
+        # Parse using output
+        field, parsed_log = parse_line_by_position(text, i)
 
         lines_data.append(
-            {
-                "line_number": i,
-                "text_knn": text_knn,
-                "text_logistic": text_logistic,
-                "field_knn": field_knn,
-                "field_logistic": field_log,
-                "boxes": line_boxes,
-            }
+            LineExtractionResult(
+                line_number=i,
+                text=text,
+                field=field,
+                boxes=line_boxes,
+            )
         )
 
     return lines_data

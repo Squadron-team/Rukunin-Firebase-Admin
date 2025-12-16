@@ -3,6 +3,7 @@ import cv2
 from typing import Tuple, List
 from cv2.typing import Rect
 
+
 def process_text_detection(
     image: np.ndarray,
 ) -> Tuple[
@@ -42,6 +43,8 @@ def process_line_grouping(
     boxes: List[Tuple[int, int, int, int]], line_threshold: int = 15
 ) -> List[List[Tuple[int, int, int, int]]]:
     """Group boxes that are on the same line"""
+    print("\n2.1 Line Grouping")
+
     if not boxes:
         return []
 

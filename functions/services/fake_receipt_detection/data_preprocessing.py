@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 from typing import Optional
 
+
 def preprocess_char(roi: np.ndarray) -> Optional[np.ndarray]:
     """
     Preprocess cropped ROI for model inference using
