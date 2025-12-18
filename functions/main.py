@@ -125,57 +125,71 @@ def calc(req: https_fn.CallableRequest):
     return {"result": result}
 
 
-@https_fn.on_request(memory=1024) # type: ignore
-def detect_fake_receipt(req: https_fn.Request): # type: ignore
-    """
-    HTTP Cloud Function for fake receipt detection
-    - 'image': image from HTTP post request
-    - 'expected_fields': string with expected values (e.g., "Rp14.000")
+@https_fn.on_request(memory=1024)  # type: ignore
+def detect_fake_receipt(req: https_fn.Request):  # type: ignore
 
-    Returns JSON with verification results
-    """
-    if "image" not in req.files:
-        raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "No image file!"
-        )
+    # ---------- CORS HEADERS ----------
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
 
-    expected_amount = req.form.get("expected_amount")
+    # ---------- PRE-FLIGHT ----------
+    if req.method == "OPTIONS":
+        return ("", 204, headers)
 
-    if expected_amount is None:
-        raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
-            "Expected amount field is missing!",
-        )
-
+    # ---------- NORMAL REQUEST ----------
     try:
-        file = req.files["image"]
+        if "image" not in req.files:
+            return (
+                {"error": "No image file"},
+                400,
+                headers,
+            )
 
-        # Read bytes
+        expected_amount = req.form.get("expected_amount")
+        if expected_amount is None:
+            return (
+                {"error": "Expected amount missing"},
+                400,
+                headers,
+            )
+
+        file = req.files["image"]
         image_bytes = file.read()
 
-        # Decode image
         np_arr = np.frombuffer(image_bytes, np.uint8)
         image_np = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
         if image_np is None:
-            raise https_fn.HttpsError(
-                https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Invalid image"
+            return (
+                {"error": "Invalid image"},
+                400,
+                headers,
             )
+
         verification, lines_data = layout_aware_receipt_verification(
             image=image_np,
             expected_amount={"total_amount": expected_amount.lower()},
         )
 
-        return {
-            "message": "success",
-            "expected_amount": expected_amount,
-            "final_verdict": verification.summary.final_verdict,
-            "verification": verification,
-            "lines_data": lines_data,
-        }
+        return (
+            {
+                "message": "success",
+                "expected_amount": expected_amount,
+                "final_verdict": verification.summary.final_verdict,
+                "verification": verification,
+                "lines_data": lines_data,
+            },
+            200,
+            headers,
+        )
 
     except Exception as e:
         logging.exception("Receipt detection error")
-        raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.INTERNAL, f"Processing failed: {str(e)}"
+        return (
+            {"error": f"Processing failed: {str(e)}"},
+            500,
+            headers,
         )
